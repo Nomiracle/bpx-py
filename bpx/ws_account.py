@@ -1,0 +1,119 @@
+import json
+import asyncio
+import websockets
+from typing import Callable, Optional, Dict, Any
+from bpx.base.base_ws_account import BaseWsAccount
+
+
+class WsAccount(BaseWsAccount):
+    """
+    Asynchronous WebSocket client for authenticated streams
+    """
+
+    def __init__(self, public_key: str, secret_key: str, window: int = 5000, 
+                 debug: bool = False, on_message: Optional[Callable] = None,
+                 on_error: Optional[Callable] = None, on_close: Optional[Callable] = None,
+                 on_open: Optional[Callable] = None):
+        """
+        Initialize WebSocket account client
+        
+        Args:
+            public_key: API public key
+            secret_key: API secret key (base64 encoded)
+            window: Time window for signature validity in milliseconds
+            debug: Enable debug mode
+            on_message: Callback function for messages
+            on_error: Callback function for errors
+            on_close: Callback function for connection close
+            on_open: Callback function for connection open
+        """
+        super().__init__(public_key, secret_key, window, debug)
+        self.ws = None
+        self.on_message_callback = on_message
+        self.on_error_callback = on_error
+        self.on_close_callback = on_close
+        self.on_open_callback = on_open
+        self._running = False
+        self._authenticated = False
+
+    async def connect(self):
+        """
+        Establish WebSocket connection and start listening
+        """
+        try:
+            self.ws = await websockets.connect(self.get_ws_url())
+            self._running = True
+            
+            if self.on_open_callback:
+                if asyncio.iscoroutinefunction(self.on_open_callback):
+                    await self.on_open_callback()
+                else:
+                    self.on_open_callback()
+            
+            await self._listen()
+        except Exception as e:
+            if self.on_error_callback:
+                if asyncio.iscoroutinefunction(self.on_error_callback):
+                    await self.on_error_callback(e)
+                else:
+                    self.on_error_callback(e)
+
+    async def _listen(self):
+        """Listen for incoming messages"""
+        try:
+            async for message in self.ws:
+                if self.on_message_callback:
+                    try:
+                        data = json.loads(message)
+                        if asyncio.iscoroutinefunction(self.on_message_callback):
+                            await self.on_message_callback(data)
+                        else:
+                            self.on_message_callback(data)
+                    except json.JSONDecodeError:
+                        if asyncio.iscoroutinefunction(self.on_message_callback):
+                            await self.on_message_callback(message)
+                        else:
+                            self.on_message_callback(message)
+        except websockets.exceptions.ConnectionClosed as e:
+            self._authenticated = False
+            if self.on_close_callback:
+                if asyncio.iscoroutinefunction(self.on_close_callback):
+                    await self.on_close_callback(e.code, e.reason)
+                else:
+                    self.on_close_callback(e.code, e.reason)
+        except Exception as e:
+            if self.on_error_callback:
+                if asyncio.iscoroutinefunction(self.on_error_callback):
+                    await self.on_error_callback(e)
+                else:
+                    self.on_error_callback(e)
+        finally:
+            self._running = False
+
+    async def send(self, message: Dict[str, Any]):
+        """
+        Send message to WebSocket server
+        
+        Args:
+            message: Message dict to send
+        """
+        if self.ws and self.ws.close_code is None:
+            await self.ws.send(json.dumps(message))
+
+    async def subscribe(self, subscription_message: Dict[str, Any]):
+        """
+        Subscribe to a stream
+        
+        Args:
+            subscription_message: Subscription message from base class methods
+        """
+        await self.send(subscription_message)
+
+    async def close(self):
+        """
+        Close WebSocket connection
+        """
+        self._running = False
+        self._authenticated = False
+        if self.ws and self.ws.close_code is None:
+            await self.ws.close()
